@@ -17,7 +17,6 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.chrome.service import Service
@@ -49,52 +48,60 @@ def create_driver(driver_path):
     driver.set_page_load_timeout(20)
     return driver
 
-# ================= SCRAPE =================
+# ================= SCRAPE (FIX CHUẨN) =================
 def scrape_fast(driver, ma_kh, max_retry=3):
     thoi_gian = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     for attempt in range(max_retry):
         try:
             input_el = WebDriverWait(driver, 10).until(
-                EC.presence_of_element_located((By.ID, "idMaKhachHang"))
+                lambda d: d.find_element(By.ID, "idMaKhachHang")
             )
 
             input_el.clear()
+            time.sleep(0.3)
             input_el.send_keys(ma_kh)
             input_el.send_keys(Keys.RETURN)
 
-            WebDriverWait(driver, 10).until(
-                EC.presence_of_element_located((By.ID, "idThongTinLichNgungGiamMaKhachHang"))
+            # 🔥 Đợi TEXT THẬT (KHÔNG PHẢI ELEMENT)
+            WebDriverWait(driver, 15).until(
+                lambda d: d.find_element(
+                    By.ID, "idThongTinLichNgungGiamMaKhachHang"
+                ).text.strip() != ""
             )
-
-            time.sleep(1)
 
             content = driver.find_element(
                 By.ID, "idThongTinLichNgungGiamMaKhachHang"
             ).text.strip()
 
-            if content and len(content) > 30:
+            # 🔥 Không có lịch
+            if "Không có lịch" in content:
                 return {
                     "Ma_KH": ma_kh,
                     "Thoi_gian": thoi_gian,
                     "Noi_dung": content
                 }
 
-        except Exception:
-            print(f"\n🔁 Retry {attempt+1} | {ma_kh}")
-            try:
-                driver.refresh()
-            except:
-                pass
+            # 🔥 chặn dữ liệu rỗng giả
+            if len(content) < 20:
+                raise Exception("Text rỗng")
+
+            return {
+                "Ma_KH": ma_kh,
+                "Thoi_gian": thoi_gian,
+                "Noi_dung": content
+            }
+
+        except Exception as e:
+            print(f"\n🔁 Retry {attempt+1} | {ma_kh} | {e}")
             time.sleep(2)
 
-    # ❌ Nếu fail
     error_list.append(ma_kh)
 
     return {
         "Ma_KH": ma_kh,
         "Thoi_gian": thoi_gian,
-        "Noi_dung": "Lỗi scrape hoặc dữ liệu rỗng"
+        "Noi_dung": "Lỗi - không lấy được dữ liệu"
     }
 
 # ================= WORKER =================
@@ -107,13 +114,14 @@ def worker(data, driver_path, output):
         driver.get("https://cskh.evnspc.vn/TraCuu/LichNgungGiamCungCapDien")
 
         WebDriverWait(driver, 20).until(
-            EC.presence_of_element_located((By.ID, "idMaKhachHang"))
+            lambda d: d.find_element(By.ID, "idMaKhachHang")
         )
 
         for ma_kh in data:
             res = scrape_fast(driver, ma_kh)
             buffer.append(res)
 
+            # HIỂN THỊ
             print("\n" + "="*50)
             print(f"🔎 {ma_kh}")
             print(f"⏰ {res['Thoi_gian']}")
@@ -148,7 +156,6 @@ def write_csv(file, rows, mode='a', header=False):
 
 # ================= PROCESS =================
 def process(input_csv):
-    print("\n🧹 Xử lý dữ liệu...")
     df = pd.read_csv(input_csv)
     rows = []
 
@@ -160,7 +167,6 @@ def process(input_csv):
         dc = re.search(r"ĐỊA CHỈ:\s*(.+)", text)
 
         blocks = re.split(r"(?=MÃ.*?LỊCH)", text, flags=re.IGNORECASE)
-
         found = False
 
         for b in blocks:
@@ -185,11 +191,7 @@ def process(input_csv):
 
         if not found:
             rows.append([
-                row["Ma_KH"],
-                kh.group(1) if kh else "",
-                dc.group(1) if dc else "",
-                "",
-                "", "", "", "",
+                row["Ma_KH"], "", "", "", "", "", "", "",
                 "Không tách được lịch",
                 tg_tra_cuu
             ])
@@ -202,29 +204,18 @@ def process(input_csv):
     ])
 
     df2.to_excel("output.xlsx", index=False)
-    print("📁 Xuất output.xlsx")
+    print("\n📁 Xuất output.xlsx")
 
-    print(f"\n📊 INPUT: {total}")
+    print(f"📊 INPUT: {total}")
     print(f"📊 OUTPUT: {df2['Ma_KH'].nunique()}")
 
     return df2
-
-# ================= RETRY =================
-def retry(func, max_retries=5):
-    for i in range(max_retries):
-        try:
-            return func()
-        except Exception as e:
-            print(f"⚠️ Retry {i+1}: {e}")
-            time.sleep((2 ** i) + random.uniform(0, 2))
-    raise Exception("Fail API")
 
 # ================= GOOGLE SHEETS =================
 def upload_sheet(df):
     try:
         raw = os.getenv("GCP_JSON")
         if not raw:
-            print("⚠️ Thiếu GCP_JSON")
             return
 
         raw = raw.replace("\\\\n", "\\n")
@@ -237,22 +228,19 @@ def upload_sheet(df):
         ])
 
         client = gspread.authorize(creds)
-        sheet = retry(lambda: client.open_by_key(SPREADSHEET_ID))
+        sheet = client.open_by_key(SPREADSHEET_ID)
 
         try:
-            ws = retry(lambda: sheet.worksheet(TARGET_SHEET))
+            ws = sheet.worksheet(TARGET_SHEET)
         except WorksheetNotFound:
-            ws = retry(lambda: sheet.add_worksheet(title=TARGET_SHEET, rows="1000", cols="20"))
+            ws = sheet.add_worksheet(title=TARGET_SHEET, rows="1000", cols="20")
 
         data = [df.columns.tolist()] + df.astype(str).values.tolist()
 
-        def do_update():
-            ws.clear()
-            time.sleep(1)
-            ws.update(range_name="A1", values=data)
+        ws.clear()
+        ws.update(range_name="A1", values=data)
 
-        retry(do_update)
-        print("✅ Upload OK")
+        print("✅ Upload Google Sheets OK")
 
     except Exception as e:
         print("❌ Upload lỗi:", e)
@@ -278,7 +266,7 @@ if __name__ == "__main__":
         for f in as_completed(futures):
             f.result()
 
-    # 🔁 Retry mã lỗi
+    # 🔁 retry mã lỗi
     if error_list:
         print(f"\n🔁 Retry {len(error_list)} mã lỗi...")
         retry_data = list(set(error_list))
@@ -289,4 +277,4 @@ if __name__ == "__main__":
     df = process(file_raw)
     upload_sheet(df)
 
-    print("🏁 HOÀN THÀNH")
+    print("\n🏁 DONE")
