@@ -140,7 +140,7 @@ def worker(data, driver_path, output):
                 write_csv(output, buffer)
                 buffer = []
 
-            time.sleep(random.uniform(0.7, 1.2))
+            time.sleep(random.uniform(1.5, 3))
 
         if buffer:
             write_csv(output, buffer)
