@@ -7,7 +7,6 @@ import threading
 import random
 import re
 import json
-import sys
 import gspread
 from google.oauth2.service_account import Credentials
 from gspread.exceptions import WorksheetNotFound
@@ -24,6 +23,7 @@ from selenium.webdriver.chrome.service import Service
 # ================= CONFIG =================
 processed = 0
 total = 0
+skip_count = 0
 lock = threading.Lock()
 csv_lock = threading.Lock()
 error_list = []
@@ -48,7 +48,7 @@ def create_driver(driver_path):
     driver.set_page_load_timeout(20)
     return driver
 
-# ================= SCRAPE (FIX CHUẨN) =================
+# ================= SCRAPE =================
 def scrape_fast(driver, ma_kh, max_retry=3):
     thoi_gian = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -63,7 +63,7 @@ def scrape_fast(driver, ma_kh, max_retry=3):
             input_el.send_keys(ma_kh)
             input_el.send_keys(Keys.RETURN)
 
-            # 🔥 Đợi TEXT THẬT (KHÔNG PHẢI ELEMENT)
+            # Đợi TEXT thật sự
             WebDriverWait(driver, 15).until(
                 lambda d: d.find_element(
                     By.ID, "idThongTinLichNgungGiamMaKhachHang"
@@ -74,15 +74,13 @@ def scrape_fast(driver, ma_kh, max_retry=3):
                 By.ID, "idThongTinLichNgungGiamMaKhachHang"
             ).text.strip()
 
-            # 🔥 Không có lịch
             if "Không có lịch" in content:
                 return {
                     "Ma_KH": ma_kh,
                     "Thoi_gian": thoi_gian,
-                    "Noi_dung": content
+                    "Noi_dung": "Không có lịch"
                 }
 
-            # 🔥 chặn dữ liệu rỗng giả
             if len(content) < 20:
                 raise Exception("Text rỗng")
 
@@ -106,7 +104,7 @@ def scrape_fast(driver, ma_kh, max_retry=3):
 
 # ================= WORKER =================
 def worker(data, driver_path, output):
-    global processed
+    global processed, skip_count
     driver = create_driver(driver_path)
     buffer = []
 
@@ -119,14 +117,19 @@ def worker(data, driver_path, output):
 
         for ma_kh in data:
             res = scrape_fast(driver, ma_kh)
-            buffer.append(res)
 
-            # HIỂN THỊ
             print("\n" + "="*50)
             print(f"🔎 {ma_kh}")
             print(f"⏰ {res['Thoi_gian']}")
             print(f"📄 {res['Noi_dung'][:200]}...")
             print("="*50)
+
+            # 🚫 Không ghi nếu không có lịch
+            if "Không có lịch" not in res["Noi_dung"]:
+                buffer.append(res)
+            else:
+                skip_count += 1
+                print(f"⚠️ Bỏ qua ghi file: {ma_kh}")
 
             with lock:
                 processed += 1
@@ -167,7 +170,6 @@ def process(input_csv):
         dc = re.search(r"ĐỊA CHỈ:\s*(.+)", text)
 
         blocks = re.split(r"(?=MÃ.*?LỊCH)", text, flags=re.IGNORECASE)
-        found = False
 
         for b in blocks:
             ma = re.search(r"MÃ.*LỊCH:\s*(\d+)", b)
@@ -175,7 +177,6 @@ def process(input_csv):
             lydo = re.search(r"LÝ DO.*:\s*(.+)", b)
 
             if ma:
-                found = True
                 rows.append([
                     row["Ma_KH"],
                     kh.group(1) if kh else "",
@@ -189,13 +190,6 @@ def process(input_csv):
                     tg_tra_cuu
                 ])
 
-        if not found:
-            rows.append([
-                row["Ma_KH"], "", "", "", "", "", "", "",
-                "Không tách được lịch",
-                tg_tra_cuu
-            ])
-
     df2 = pd.DataFrame(rows, columns=[
         "Ma_KH","Khach_hang","Dia_chi",
         "Ma_lich","Ngay_BD","Gio_BD",
@@ -205,9 +199,6 @@ def process(input_csv):
 
     df2.to_excel("output.xlsx", index=False)
     print("\n📁 Xuất output.xlsx")
-
-    print(f"📊 INPUT: {total}")
-    print(f"📊 OUTPUT: {df2['Ma_KH'].nunique()}")
 
     return df2
 
@@ -266,7 +257,7 @@ if __name__ == "__main__":
         for f in as_completed(futures):
             f.result()
 
-    # 🔁 retry mã lỗi
+    # retry mã lỗi
     if error_list:
         print(f"\n🔁 Retry {len(error_list)} mã lỗi...")
         retry_data = list(set(error_list))
@@ -275,6 +266,9 @@ if __name__ == "__main__":
 
     time.sleep(2)
     df = process(file_raw)
+
+    print(f"\n🚫 Bỏ qua {skip_count} mã không có lịch")
+
     upload_sheet(df)
 
     print("\n🏁 DONE")
