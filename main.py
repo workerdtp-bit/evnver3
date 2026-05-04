@@ -27,6 +27,7 @@ processed = 0
 total = 0
 lock = threading.Lock()
 csv_lock = threading.Lock()
+error_list = []
 
 SPREADSHEET_ID = "1A2KK8bQaJukV9R7FHdOvnmZVQMk2b0IE2971ZBB-Hgs"
 TARGET_SHEET = "upload"
@@ -46,7 +47,6 @@ def create_driver(driver_path):
     service = Service(driver_path)
     driver = webdriver.Chrome(service=service, options=options)
     driver.set_page_load_timeout(20)
-
     return driver
 
 # ================= SCRAPE =================
@@ -73,7 +73,7 @@ def scrape_fast(driver, ma_kh, max_retry=3):
                 By.ID, "idThongTinLichNgungGiamMaKhachHang"
             ).text.strip()
 
-            if content:
+            if content and len(content) > 30:
                 return {
                     "Ma_KH": ma_kh,
                     "Thoi_gian": thoi_gian,
@@ -88,10 +88,13 @@ def scrape_fast(driver, ma_kh, max_retry=3):
                 pass
             time.sleep(2)
 
+    # ❌ Nếu fail
+    error_list.append(ma_kh)
+
     return {
         "Ma_KH": ma_kh,
         "Thoi_gian": thoi_gian,
-        "Noi_dung": "Lỗi sau retry"
+        "Noi_dung": "Lỗi scrape hoặc dữ liệu rỗng"
     }
 
 # ================= WORKER =================
@@ -111,18 +114,16 @@ def worker(data, driver_path, output):
             res = scrape_fast(driver, ma_kh)
             buffer.append(res)
 
-            # ===== HIỂN THỊ KẾT QUẢ =====
-            print("\n" + "="*60)
-            print(f"🔎 Mã KH: {ma_kh}")
-            print(f"⏰ Tra cứu: {res['Thoi_gian']}")
-            print(f"📄 Nội dung:\n{res['Noi_dung']}")
-            print("="*60)
+            print("\n" + "="*50)
+            print(f"🔎 {ma_kh}")
+            print(f"⏰ {res['Thoi_gian']}")
+            print(f"📄 {res['Noi_dung'][:200]}...")
+            print("="*50)
 
             with lock:
                 processed += 1
                 percent = (processed / total) * 100
-                bar = "█" * int(percent // 2) + "-" * (50 - int(percent // 2))
-                print(f"\r📊 [{bar}] {processed}/{total} ({percent:.1f}%)", end="", flush=True)
+                print(f"\r📊 {processed}/{total} ({percent:.1f}%)", end="", flush=True)
 
             if len(buffer) >= 5:
                 write_csv(output, buffer)
@@ -147,7 +148,7 @@ def write_csv(file, rows, mode='a', header=False):
 
 # ================= PROCESS =================
 def process(input_csv):
-    print("\n🧹 Đang xử lý dữ liệu...")
+    print("\n🧹 Xử lý dữ liệu...")
     df = pd.read_csv(input_csv)
     rows = []
 
@@ -160,32 +161,51 @@ def process(input_csv):
 
         blocks = re.split(r"(?=MÃ.*?LỊCH)", text, flags=re.IGNORECASE)
 
+        found = False
+
         for b in blocks:
             ma = re.search(r"MÃ.*LỊCH:\s*(\d+)", b)
             tg = re.search(r"từ (.+?) ngày (.+?) đến (.+?) ngày (.+)", b)
             lydo = re.search(r"LÝ DO.*:\s*(.+)", b)
 
-            if ma and tg:
+            if ma:
+                found = True
                 rows.append([
                     row["Ma_KH"],
                     kh.group(1) if kh else "",
                     dc.group(1) if dc else "",
                     ma.group(1),
-                    tg.group(2), tg.group(1),
-                    tg.group(4), tg.group(3),
+                    tg.group(2) if tg else "",
+                    tg.group(1) if tg else "",
+                    tg.group(4) if tg else "",
+                    tg.group(3) if tg else "",
                     lydo.group(1) if lydo else "",
                     tg_tra_cuu
                 ])
 
+        if not found:
+            rows.append([
+                row["Ma_KH"],
+                kh.group(1) if kh else "",
+                dc.group(1) if dc else "",
+                "",
+                "", "", "", "",
+                "Không tách được lịch",
+                tg_tra_cuu
+            ])
+
     df2 = pd.DataFrame(rows, columns=[
-        "Ma_KH", "Khach_hang", "Dia_chi",
-        "Ma_lich", "Ngay_BD", "Gio_BD",
-        "Ngay_KT", "Gio_KT", "Ly_do",
+        "Ma_KH","Khach_hang","Dia_chi",
+        "Ma_lich","Ngay_BD","Gio_BD",
+        "Ngay_KT","Gio_KT","Ly_do",
         "Thoi_gian_tra_cuu"
     ])
 
     df2.to_excel("output.xlsx", index=False)
-    print("📁 Đã xuất output.xlsx")
+    print("📁 Xuất output.xlsx")
+
+    print(f"\n📊 INPUT: {total}")
+    print(f"📊 OUTPUT: {df2['Ma_KH'].nunique()}")
 
     return df2
 
@@ -197,7 +217,7 @@ def retry(func, max_retries=5):
         except Exception as e:
             print(f"⚠️ Retry {i+1}: {e}")
             time.sleep((2 ** i) + random.uniform(0, 2))
-    raise Exception("Fail sau nhiều retry")
+    raise Exception("Fail API")
 
 # ================= GOOGLE SHEETS =================
 def upload_sheet(df):
@@ -232,49 +252,41 @@ def upload_sheet(df):
             ws.update(range_name="A1", values=data)
 
         retry(do_update)
-
-        print("\n✅ Upload Google Sheets thành công!")
+        print("✅ Upload OK")
 
     except Exception as e:
-        print("❌ Lỗi Google Sheets:", e)
+        print("❌ Upload lỗi:", e)
 
 # ================= MAIN =================
 if __name__ == "__main__":
     file_input = "makh_list.csv"
     file_raw = "raw.csv"
 
-    if not os.path.exists(file_input):
-        print("❌ Thiếu file makh_list.csv")
-        sys.exit()
-
     with open(file_input, encoding="utf-8") as f:
         data = [r[0] for r in csv.reader(f) if r]
 
     total = len(data)
-    print(f"🚀 Tổng {total} mã KH")
 
     driver_path = ChromeDriverManager().install()
-
     write_csv(file_raw, [], mode="w", header=True)
 
     threads = 3
     chunks = [data[i::threads] for i in range(threads)]
-
-    start = time.time()
 
     with ThreadPoolExecutor(max_workers=threads) as ex:
         futures = [ex.submit(worker, c, driver_path, file_raw) for c in chunks]
         for f in as_completed(futures):
             f.result()
 
-    print("\n⏳ Đợi ghi file...")
+    # 🔁 Retry mã lỗi
+    if error_list:
+        print(f"\n🔁 Retry {len(error_list)} mã lỗi...")
+        retry_data = list(set(error_list))
+        error_list.clear()
+        worker(retry_data, driver_path, file_raw)
+
     time.sleep(2)
-
     df = process(file_raw)
-
-    print("⏳ Upload sau 3s...")
-    time.sleep(3)
-
     upload_sheet(df)
 
-    print(f"🏁 Xong trong {round(time.time()-start,2)}s")
+    print("🏁 HOÀN THÀNH")
