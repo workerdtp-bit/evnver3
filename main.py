@@ -39,7 +39,6 @@ def create_driver(driver_path):
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
 
-    # 🚀 tăng tốc
     prefs = {"profile.managed_default_content_settings.images": 2}
     options.add_experimental_option("prefs", prefs)
     options.page_load_strategy = "eager"
@@ -50,7 +49,7 @@ def create_driver(driver_path):
 
     return driver
 
-# ================= SCRAPE FAST =================
+# ================= SCRAPE =================
 def scrape_fast(driver, ma_kh, max_retry=3):
     thoi_gian = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -102,7 +101,6 @@ def worker(data, driver_path, output):
     buffer = []
 
     try:
-        # 🚀 load 1 lần
         driver.get("https://cskh.evnspc.vn/TraCuu/LichNgungGiamCungCapDien")
 
         WebDriverWait(driver, 20).until(
@@ -112,6 +110,13 @@ def worker(data, driver_path, output):
         for ma_kh in data:
             res = scrape_fast(driver, ma_kh)
             buffer.append(res)
+
+            # ===== HIỂN THỊ KẾT QUẢ =====
+            print("\n" + "="*60)
+            print(f"🔎 Mã KH: {ma_kh}")
+            print(f"⏰ Tra cứu: {res['Thoi_gian']}")
+            print(f"📄 Nội dung:\n{res['Noi_dung']}")
+            print("="*60)
 
             with lock:
                 processed += 1
@@ -148,6 +153,7 @@ def process(input_csv):
 
     for _, row in df.iterrows():
         text = str(row["Noi_dung"])
+        tg_tra_cuu = row["Thoi_gian"]
 
         kh = re.search(r"KHÁCH HÀNG:\s*(.+)", text)
         dc = re.search(r"ĐỊA CHỈ:\s*(.+)", text)
@@ -167,13 +173,15 @@ def process(input_csv):
                     ma.group(1),
                     tg.group(2), tg.group(1),
                     tg.group(4), tg.group(3),
-                    lydo.group(1) if lydo else ""
+                    lydo.group(1) if lydo else "",
+                    tg_tra_cuu
                 ])
 
     df2 = pd.DataFrame(rows, columns=[
         "Ma_KH", "Khach_hang", "Dia_chi",
         "Ma_lich", "Ngay_BD", "Gio_BD",
-        "Ngay_KT", "Gio_KT", "Ly_do"
+        "Ngay_KT", "Gio_KT", "Ly_do",
+        "Thoi_gian_tra_cuu"
     ])
 
     df2.to_excel("output.xlsx", index=False)
@@ -209,7 +217,6 @@ def upload_sheet(df):
         ])
 
         client = gspread.authorize(creds)
-
         sheet = retry(lambda: client.open_by_key(SPREADSHEET_ID))
 
         try:
