@@ -28,7 +28,7 @@ lock = threading.Lock()
 csv_lock = threading.Lock()
 error_list = []
 
-SPREADSHEET_ID = "1tF_Oy6ZKJpNSAj9ElrUZIyHrw-ri4EPiESE_12CCHCw"
+SPREADSHEET_ID = "1A2KK8bQaJukV9R7FHdOvnmZVQMk2b0IE2971ZBB-Hgs"
 TARGET_SHEET = "upload"
 
 # ================= DRIVER =================
