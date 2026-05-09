@@ -54,7 +54,7 @@ def scrape_fast(driver, ma_kh, max_retry=3):
 
     for attempt in range(max_retry):
         try:
-            input_el = WebDriverWait(driver, 10).until(
+            input_el = WebDriverWait(driver, 20).until(
                 lambda d: d.find_element(By.ID, "idMaKhachHang")
             )
 
@@ -64,7 +64,7 @@ def scrape_fast(driver, ma_kh, max_retry=3):
             input_el.send_keys(Keys.RETURN)
 
             # Đợi TEXT thật sự
-            WebDriverWait(driver, 15).until(
+            WebDriverWait(driver, 20).until(
                 lambda d: d.find_element(
                     By.ID, "idThongTinLichNgungGiamMaKhachHang"
                 ).text.strip() != ""
@@ -111,7 +111,7 @@ def worker(data, driver_path, output):
     try:
         driver.get("https://cskh.evnspc.vn/TraCuu/LichNgungGiamCungCapDien")
 
-        WebDriverWait(driver, 20).until(
+        WebDriverWait(driver, 25).until(
             lambda d: d.find_element(By.ID, "idMaKhachHang")
         )
 
