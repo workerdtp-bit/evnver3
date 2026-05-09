@@ -126,7 +126,7 @@ def worker(data, driver_path, output):
                 processed += 1
                 percent = (processed / total) * 100
                 print(f"\n[{status}] {ma_kh} | {res['Noi_dung'][:80]}...")
-                print(f"📊 Tiến độ: {processed}/{total} ({percent:.1f}%) | Đã bỏ qua: {skip_count}", end="", flush=True)
+                print(f"📊 Tiến độ: {processed}/{total} ({percent:.1f}%) | Số MKH không có lịch: {skip_count}", end="", flush=True)
 
             if len(buffer) >= 5:
                 write_csv(output, buffer)
