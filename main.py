@@ -43,7 +43,7 @@ def create_driver(driver_path):
 
     prefs = {"profile.managed_default_content_settings.images": 2}
     options.add_experimental_option("prefs", prefs)
-    options.page_load_strategy = "normal" # Thay đổi sang normal để đợi trang ổn định hơn
+    options.page_load_strategy = "normal"
 
     service = Service(driver_path)
     driver = webdriver.Chrome(service=service, options=options)
@@ -60,8 +60,7 @@ def scrape_fast(driver, ma_kh, max_retry=3):
                 lambda d: d.find_element(By.ID, "idMaKhachHang")
             )
 
-            # --- CHỐT CHẶN JAVASCRIPT ---
-            # Xóa ô nhập và đặt trạng thái chờ vào khung kết quả
+            # Xóa sạch bằng JS và đặt nhãn chờ
             driver.execute_script("""
                 arguments[0].value = '';
                 document.getElementById('idThongTinLichNgungGiamMaKhachHang').innerHTML = 'WAITING_FOR_DATA';
@@ -71,17 +70,16 @@ def scrape_fast(driver, ma_kh, max_retry=3):
             input_el.send_keys(ma_kh)
             input_el.send_keys(Keys.RETURN)
 
-            # Đợi cho đến khi chữ 'WAITING_FOR_DATA' biến mất (hệ thống đã ghi đè kết quả mới)
+            # Đợi cho đến khi hệ thống cập nhật kết quả mới
             WebDriverWait(driver, 25).until(
                 lambda d: "WAITING_FOR_DATA" not in d.find_element(By.ID, "idThongTinLichNgungGiamMaKhachHang").text
             )
 
-            # Đợi thêm một nhịp ngắn để đảm bảo text render đầy đủ
             time.sleep(1)
             content = driver.find_element(By.ID, "idThongTinLichNgungGiamMaKhachHang").text.strip()
 
             if content == "":
-                raise Exception("Dữ liệu rỗng sau khi load")
+                raise Exception("Dữ liệu rỗng")
 
             return {
                 "Ma_KH": ma_kh,
@@ -90,18 +88,13 @@ def scrape_fast(driver, ma_kh, max_retry=3):
             }
 
         except Exception as e:
-            print(f"\n🔁 Retry {attempt+1} | {ma_kh} | {str(e)[:50]}")
+            print(f"\n🔁 Thử lại {attempt+1} | {ma_kh}")
             driver.refresh()
             time.sleep(3)
 
     with lock:
         error_list.append(ma_kh)
-
-    return {
-        "Ma_KH": ma_kh,
-        "Thoi_gian": thoi_gian,
-        "Noi_dung": "Lỗi - không lấy được dữ liệu"
-    }
+    return {"Ma_KH": ma_kh, "Thoi_gian": thoi_gian, "Noi_dung": "Lỗi - Hết thời gian chờ"}
 
 # ================= WORKER =================
 def worker(data, driver_path, output):
@@ -114,27 +107,32 @@ def worker(data, driver_path, output):
 
         for ma_kh in data:
             res = scrape_fast(driver, ma_kh)
-
-            # Log kết quả ra màn hình
-            status = "CO_LICH" if "Không có lịch" not in res["Noi_dung"] else "KHONG_LICH"
-            print(f"\n[{status}] {ma_kh} | {res['Noi_dung'][:100]}...")
-
-            if "Không có lịch" not in res["Noi_dung"] and "Lỗi -" not in res["Noi_dung"]:
-                buffer.append(res)
-            else:
+            
+            # CHỈNH SỬA QUAN TRỌNG: Kiểm tra không phân biệt hoa thường
+            content_upper = res["Noi_dung"].upper()
+            
+            if "KHÔNG CÓ LỊCH" in content_upper:
+                status = "KHONG_LICH"
                 with lock:
                     skip_count += 1
+            elif "LỖI -" in content_upper:
+                status = "LOI_TECH"
+            else:
+                status = "CO_LICH"
+                buffer.append(res)
 
+            # Log trạng thái ra màn hình
             with lock:
                 processed += 1
                 percent = (processed / total) * 100
-                print(f"\r📊 Tiến độ: {processed}/{total} ({percent:.1f}%)", end="", flush=True)
+                print(f"\n[{status}] {ma_kh} | {res['Noi_dung'][:80]}...")
+                print(f"📊 Tiến độ: {processed}/{total} ({percent:.1f}%) | Đã bỏ qua: {skip_count}", end="", flush=True)
 
             if len(buffer) >= 5:
                 write_csv(output, buffer)
                 buffer = []
 
-            time.sleep(random.uniform(2, 4))
+            time.sleep(random.uniform(1.5, 3))
 
         if buffer:
             write_csv(output, buffer)
@@ -152,9 +150,10 @@ def write_csv(file, rows, mode='a', header=False):
                 writer.writeheader()
             writer.writerows(rows)
 
-# ================= PROCESS =================
+# ================= PROCESS REGEX =================
 def process(input_csv):
-    if not os.path.exists(input_csv): return pd.DataFrame()
+    if not os.path.exists(input_csv) or os.stat(input_csv).st_size == 0:
+        return pd.DataFrame()
     
     df = pd.read_csv(input_csv)
     rows = []
@@ -165,8 +164,6 @@ def process(input_csv):
 
         kh = re.search(r"KHÁCH HÀNG:\s*(.+)", text, re.I)
         dc = re.search(r"ĐỊA CHỈ:\s*(.+)", text, re.I)
-
-        # Tách các khối lịch nếu khách hàng có nhiều lịch cúp điện
         blocks = re.split(r"(?=MÃ.*?LỊCH)", text, flags=re.IGNORECASE)
 
         for b in blocks:
@@ -194,13 +191,14 @@ def process(input_csv):
         "Ngay_KT","Gio_KT","Ly_do",
         "Thoi_gian_tra_cuu"
     ])
-
     df2.to_excel("output.xlsx", index=False)
     return df2
 
 # ================= GOOGLE SHEETS =================
 def upload_sheet(df):
-    if df.empty: return
+    if df.empty:
+        print("\n⚠️ Không có lịch cúp điện nào để upload.")
+        return
     try:
         raw = os.getenv("GCP_JSON")
         if not raw: return
@@ -222,10 +220,10 @@ def upload_sheet(df):
         data = [df.columns.tolist()] + df.astype(str).values.tolist()
         ws.clear()
         ws.update(values=data, range_name="A1")
-        print("\n✅ Upload Google Sheets OK")
+        print("\n✅ Upload Google Sheets thành công!")
 
     except Exception as e:
-        print(f"\n❌ Upload lỗi: {e}")
+        print(f"\n❌ Lỗi Sheets: {e}")
 
 # ================= MAIN =================
 if __name__ == "__main__":
@@ -233,7 +231,7 @@ if __name__ == "__main__":
     file_raw = "raw.csv"
 
     if not os.path.exists(file_input):
-        print(f"File {file_input} không tồn tại!")
+        print(f"Không tìm thấy {file_input}")
         exit()
 
     with open(file_input, encoding="utf-8") as f:
@@ -241,8 +239,6 @@ if __name__ == "__main__":
 
     total = len(data)
     driver_path = ChromeDriverManager().install()
-    
-    # Khởi tạo file CSV raw
     write_csv(file_raw, [], mode="w", header=True)
 
     threads = 3
@@ -250,19 +246,19 @@ if __name__ == "__main__":
 
     with ThreadPoolExecutor(max_workers=threads) as ex:
         futures = [ex.submit(worker, c, driver_path, file_raw) for c in chunks]
-        for f in as_completed(futures):
-            f.result()
+        for f in as_completed(futures): f.result()
 
-    # Xử lý lại các mã lỗi nếu có
     if error_list:
-        print(f"\n🔁 Đang xử lý lại {len(error_list)} mã lỗi...")
-        retry_data = list(set(error_list))
-        error_list = []
-        worker(retry_data, driver_path, file_raw)
+        print(f"\n🔁 Đang tra cứu lại {len(error_list)} mã lỗi...")
+        worker(list(set(error_list)), driver_path, file_raw)
 
-    print("\n⌛ Đang bóc tách dữ liệu và xuất file...")
+    print("\n⌛ Đang xử lý bóc tách dữ liệu...")
     final_df = process(file_raw)
     
-    print(f"🚫 Đã bỏ qua {skip_count} mã không có lịch.")
+    print(f"\n📊 TỔNG KẾT:")
+    print(f"- Tổng mã tra cứu: {total}")
+    print(f"- Số mã không có lịch (đã lọc): {skip_count}")
+    print(f"- Số mã có lịch (đã lưu): {len(final_df) if not final_df.empty else 0}")
+    
     upload_sheet(final_df)
-    print("\n🏁 TẤT CẢ ĐÃ HOÀN THÀNH")
+    print("\n🏁 DONE")
